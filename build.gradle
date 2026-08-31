@@ -1,0 +1,124 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'net.murfgames'
+version = project.loaderVersion
+
+repositories {
+    mavenCentral()
+    flatDir {
+        dirs("lib")
+    }
+}
+
+configurations {
+    loaderInclude {
+        transitive = false
+        canBeResolved = true
+        canBeConsumed = false
+    }
+
+    compileClasspath.extendsFrom(loaderInclude)
+    runtimeClasspath.extendsFrom(loaderInclude)
+}
+
+dependencies {
+    compileOnly("com.mojang:minecraft:${minecraft}")
+
+    runtimeOnly("org.lwjgl.lwjgl:lwjgl:${lwjgl}")
+    runtimeOnly("org.lwjgl.lwjgl:lwjgl-platform:${lwjgl}:natives-windows")
+    loaderInclude("org.lwjgl.lwjgl:lwjgl_util:${lwjgl}")
+
+    loaderInclude("net.bytebuddy:byte-buddy:${byteBuddy}")
+    loaderInclude("net.bytebuddy:byte-buddy-agent:${byteBuddy}")
+}
+
+shadowJar {
+    archiveBaseName.set(rootProject.name)
+    archiveVersion.set(loaderVersion)
+    archiveClassifier.set("")
+
+    configurations = [project.configurations.loaderInclude]
+
+    manifest {
+        attributes(
+                "Premain-Class": "net.murfgames.rdloader.agent.RubyDungAgent",
+                "Agent-Class": "net.murfgames.rdloader.agent.RubyDungAgent",
+                "Can-Redefine-Classes": "true",
+                "Can-Retransform-Classes": "true"
+        )
+    }
+}
+
+// TASKS
+
+def tabName = "rubydung"
+
+// Decompile Minecraft
+tasks.register('decompileMinecraft', JavaExec) {
+    group = tabName
+    description = "Decompile Minecraft jar (provided by user)"
+
+    def generatedSources = file("build/generated-sources/minecraft")
+    def minecraftJar = file("lib/minecraft-${minecraft}.jar")
+    def cfrJar = file("lib/cfr-0.151.jar")
+
+    mainClass.set("org.benf.cfr.reader.Main")
+    classpath = files(cfrJar)
+
+    args = [
+            minecraftJar.absolutePath,
+            "--outputdir", generatedSources.absolutePath,
+            "--caseinsensitivefs", "true"
+    ]
+
+    doFirst {
+        generatedSources.mkdirs()
+        println "Decompiling Minecraft jar to ${generatedSources}..."
+    }
+}
+
+// Run Minecraft Instance
+tasks.register('runMinecraft', JavaExec) {
+    group = tabName
+    description = "Runs Minecraft with the modloader applied"
+
+    dependsOn shadowJar  // Build loader JAR
+
+    // Get jars
+    def loaderJar = file("${buildDir}/libs/ruby-dung-loader-${version}.jar")
+    def minecraftJar = file("${projectDir}/lib/minecraft-${minecraft}.jar")
+
+    def workingDirectory = file("${projectDir}/run").absoluteFile
+
+    mainClass.set("com.mojang.minecraft.RubyDung")
+
+    // Extracts lwjgl natives
+    def nativesDir = file("${buildDir}/tmp/lwjgl-natives")
+    doFirst {
+        nativesDir.mkdirs()
+
+        def lwjglNativesJar = classpath.find { it.name.contains("lwjgl-platform-${lwjgl}-natives-windows") }
+        if (lwjglNativesJar) {
+            ant.unzip(src: lwjglNativesJar, dest: nativesDir)
+        }
+
+        println "Extracted LWJGL natives to: ${nativesDir.absolutePath}"
+    }
+
+    // Java shtuff
+    jvmArgs = [
+            "-javaagent:${loaderJar.absolutePath}",
+            "-Djava.library.path=${nativesDir.absolutePath}"
+    ]
+
+    classpath = project.files(loaderJar, minecraftJar, sourceSets.main.runtimeClasspath)
+    workingDir = workingDirectory
+
+    doFirst {
+        workingDirectory.mkdirs()
+        println "Running Minecraft in directory: ${workingDirectory.absolutePath}"
+    }
+}
